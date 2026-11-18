@@ -11,16 +11,33 @@ class ReleaseShelf:
         self.frames = frames
         self.audit = audit
 
+    def _coverage_gate(self, coverage):
+        """把覆盖状态映射为发布门槛。
+
+        未登记窗口/窗口跨出查询范围/仍在导入或开放时，缺口不可量化，
+        不能发布；缺口可量化时同样阻止"完整覆盖"的发布，但预览会明确标为暂定。
+        """
+        if coverage["status"] in {"complete", "no_commitments"}:
+            return True, None
+        issues = {issue["reason"] for region in coverage["regions"]
+                  for issue in region["issues"]}
+        unquantified = (not coverage["bounded"]
+                        or bool(issues & {"open", "unregistered", "partial_window",
+                                          "import_pending"}))
+        return False, "collection_coverage" if unquantified else "collection_gap"
+
     def preview(self, query, *, minimum_stories=1, maximum_exclusion_share=0.4):
         report = self.analytics.report(query)
         gate = self.analytics.quality(report, minimum_stories=minimum_stories,
                                       maximum_exclusion_share=maximum_exclusion_share)
-        coverage = self.frames.quality(report["query"])
-        if not coverage["passed"]:
+        coverage = report["coverage"] or self.frames.coverage_report(report["query"])
+        passed, reason = self._coverage_gate(coverage)
+        if not passed:
             gate["passed"] = False
-            gate["reasons"].append("collection_coverage")
+            gate["reasons"].append(reason)
         token = digest({"report": report, "gate": gate, "coverage": coverage})
-        return {"token": token, "report": report, "quality": gate, "coverage": coverage}
+        return {"token": token, "report": report, "quality": gate, "coverage": coverage,
+                "provisional": coverage["status"] not in {"complete", "no_commitments"}}
 
     def publish(self, release_id, query, token, *, minimum_stories=1, maximum_exclusion_share=0.4):
         with self.store.transaction():
@@ -65,11 +82,18 @@ class ReleaseShelf:
         query = released["report"]["query"]
         current = self.analytics.report(query)
         previous = released["report"]
+        previous_coverage = previous.get("coverage")
+        current_coverage = current.get("coverage")
+        coverage_changed = previous_coverage != current_coverage
         return {"release_id": release_id, "frozen_head": released["event_head"],
                 "current_head": current["event_head"],
                 "same_result": previous["stories"] == current["stories"] and
                                previous["excluded"] == current["excluded"],
                 "story_count_delta": current["story_count"] - previous["story_count"],
                 "excluded_delta": {key: current["excluded"].get(key, 0) - previous["excluded"].get(key, 0)
-                                   for key in sorted(set(current["excluded"]) | set(previous["excluded"]))}}
+                                   for key in sorted(set(current["excluded"]) | set(previous["excluded"]))},
+                "frozen_coverage": previous_coverage,
+                "current_coverage": current_coverage,
+                "coverage_changed": coverage_changed,
+                "current_provisional": current["provisional"]}
 

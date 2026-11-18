@@ -84,6 +84,11 @@ class FrameInput(BaseModel):
     start: str
     end: str
     expected_count: int
+    batch_id: str | None = None
+
+
+class ResealInput(BaseModel):
+    reason: str = "coverage interpretation repaired"
 
 
 class WindowComparisonInput(BaseModel):
@@ -168,7 +173,9 @@ def create_app(path="meridian.sqlite3"):
 
     @app.post("/frames")
     def open_frame(payload: FrameInput):
-        return service.frames.open(**payload.model_dump())
+        return service.frames.open(payload.frame_id, payload.source_id, payload.start,
+                                   payload.end, payload.expected_count,
+                                   batch_id=payload.batch_id)
 
     @app.get("/frames/{frame_id}")
     def frame(frame_id: str):
@@ -177,6 +184,18 @@ def create_app(path="meridian.sqlite3"):
     @app.post("/frames/{frame_id}/close")
     def close_frame(frame_id: str):
         return service.frames.close(frame_id)
+
+    @app.get("/frames/{frame_id}/seals")
+    def frame_seals(frame_id: str):
+        return service.frames.seals(frame_id)
+
+    @app.post("/frames/{frame_id}/reseal")
+    def reseal_frame(frame_id: str, payload: ResealInput):
+        return service.frames.reseal(frame_id, payload.reason)
+
+    @app.post("/frames/{frame_id}/reopen")
+    def reopen_frame(frame_id: str):
+        return service.frames.withdraw(frame_id)
 
     @app.post("/batches")
     def import_batch(payload: BatchInput):
@@ -228,6 +247,10 @@ def create_app(path="meridian.sqlite3"):
     @app.post("/reports/compare-regions")
     def compare_regions(payload: RegionComparisonInput):
         return service.comparisons.regions(payload.query.model_dump(), payload.left_region, payload.right_region)
+
+    @app.post("/reports/coverage")
+    def coverage(payload: ReportInput):
+        return service.diagnostics.coverage(payload.model_dump())
 
     @app.post("/releases")
     def publish(payload: ReleaseInput):

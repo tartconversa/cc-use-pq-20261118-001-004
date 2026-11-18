@@ -49,6 +49,15 @@ class IntegrityAudit:
                                      (row["frame_id"],))
             if row["state"] == "closed" and len(members) != row["actual_count"]:
                 issues.append({"kind": "frame_members", "frame_id": row["frame_id"]})
+            seals = self.store.all("SELECT seal_no,current_count FROM frame_seals "
+                                   "WHERE frame_id=? ORDER BY seal_no", (row["frame_id"],))
+            if row["state"] == "closed" and not seals:
+                issues.append({"kind": "frame_seal", "frame_id": row["frame_id"]})
+            if seals and seals[-1]["current_count"] != row["actual_count"]:
+                issues.append({"kind": "frame_seal_head", "frame_id": row["frame_id"]})
+            numbers = [item["seal_no"] for item in seals]
+            if numbers != list(range(1, len(numbers) + 1)):
+                issues.append({"kind": "frame_seal_gap", "frame_id": row["frame_id"]})
         return {"ok": not issues, "issues": issues, "event_head": self.store.head(),
                 "observation_revisions": len(observations), "logical_observations": len(grouped)}
 

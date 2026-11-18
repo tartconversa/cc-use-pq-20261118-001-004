@@ -1,7 +1,6 @@
 """解释观察记录未进入比较结果的原因。"""
 from collections import Counter, defaultdict
 from .contracts import report_query
-from .errors import require
 
 
 class ReviewDiagnostics:
@@ -86,12 +85,15 @@ class ReviewDiagnostics:
         report = self.analytics.report(query)
         quality = self.analytics.quality(report, minimum_stories=minimum_stories,
                                          maximum_exclusion_share=maximum_exclusion_share)
-        coverage = self.frames.quality(report["query"])
+        coverage = self.frames.coverage_report(report["query"])
         queue = self.queue(query)
         conflicts = self.story_conflicts(query)
         warnings = []
-        if not coverage["passed"]:
+        if coverage["status"] in {"partial", "incomplete"}:
             warnings.append("collection_coverage")
+        elif coverage["status"] == "no_commitments":
+            # 从未登记窗口承诺时没有可量化的缺口，但也不能声称覆盖完整。
+            warnings.append("coverage_unregistered")
         if conflicts["count"]:
             warnings.append("story_coding_conflicts")
         if queue["by_status"].get("disputed", 0):
@@ -99,5 +101,81 @@ class ReviewDiagnostics:
         return {"query_hash": report["query_hash"], "event_head": report["event_head"],
                 "quality": quality, "coverage": coverage, "queue": queue["by_status"],
                 "story_conflicts": conflicts["count"], "warnings": warnings,
+                "provisional": report["provisional"],
+                "coverage_status": coverage["status"],
+                "pending_reports": coverage["pending_reports"],
                 "ready": quality["passed"] and not warnings}
+
+    def coverage(self, query):
+        """研究员查看地区 → 来源 → 窗口 → 故事分母的来源覆盖链。"""
+        spec = report_query(query)
+        report = self.analytics.report(spec)
+        coverage = report["coverage"]
+        # 按来源归属已确认故事，避免用 outlet 名称猜测来源。
+        rows = self.analytics._rows(spec)
+        source_stories = defaultdict(list)
+        for row in rows:
+            if self.analytics._classify(row, spec) != "eligible":
+                continue
+            data = row["item"]["data"]
+            coding = row["state"]["coding"]
+            source_stories[(data["source_id"], row["source"]["region"],
+                            data["story_key"], coding["topic"], coding["audience"])].append(row)
+        regions = []
+        for region in coverage["regions"]:
+            sources = []
+            for source in region["sources"]:
+                if not source["in_scope"]:
+                    continue
+                stories = []
+                for (source_id, region_name, story_key, topic, audience), members in sorted(
+                        source_stories.items()):
+                    if source_id != source["source_id"] or region_name != region["region"]:
+                        continue
+                    stances = {row["state"]["coding"]["stance"] for row in members}
+                    stories.append({"story_key": story_key, "topic": topic,
+                                    "audience": audience,
+                                    "stance": members[0]["state"]["coding"]["stance"]
+                                    if len(stances) == 1 else "mixed",
+                                    "observation_count": len(members)})
+                sources.append({
+                    "source_id": source["source_id"], "outlet": source["outlet"],
+                    "status": source["status"],
+                    "pending_reports": source["pending_reports"],
+                    "surplus_reports": source["surplus_reports"],
+                    "pending_known": source["pending_known"],
+                    "registered": source["registered"],
+                    "has_observations": source["has_observations"],
+                    "issues": source["issues"],
+                    "frames": [{
+                        "frame_id": frame["frame_id"], "start": frame["start"],
+                        "end": frame["end"], "state": frame["state"],
+                        "status": frame["status"],
+                        "expected_count": frame["expected_count"],
+                        "observed_count": frame["current_count"],
+                        "pending_reports": frame["pending_reports"],
+                        "surplus_reports": frame["surplus_reports"],
+                        "drift_kind": frame["drift_kind"],
+                        "within_query": frame["within_query"],
+                        "batch": frame["batch"],
+                    } for frame in source["frames"]],
+                    "stories": stories,
+                })
+            region_row = next((row for row in report["regions"]
+                               if row["region"] == region["region"]), None)
+            regions.append({
+                "region": region["region"], "status": region["status"],
+                "provisional": region["provisional"],
+                "pending_reports": region["pending_reports"],
+                "uncovered_sources": region["uncovered_sources"],
+                "denominator": {"stories": region_row["story_count"] if region_row else 0,
+                                "observations": region_row["observation_count"] if region_row else 0},
+                "sources": sources,
+            })
+        return {"query": spec, "query_hash": report["query_hash"],
+                "event_head": report["event_head"], "status": coverage["status"],
+                "provisional": coverage["provisional"],
+                "pending_reports": coverage["pending_reports"],
+                "regions": regions,
+                "rules": coverage["rules"]}
 

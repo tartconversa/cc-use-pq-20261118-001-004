@@ -46,7 +46,8 @@ class EvidenceExporter:
         evidence = report["provenance"]
         bundle = {"kind": "frozen", "release_id": release_id, "report": report,
                   "evidence": evidence, "event_head": release["event_head"],
-                  "preview_token": release["preview_token"]}
+                  "preview_token": release["preview_token"],
+                  "coverage": report.get("coverage")}
         bundle["bundle_hash"] = digest(bundle)
         return bundle
 
@@ -78,17 +79,30 @@ class EvidenceExporter:
         by_source = defaultdict(lambda: Counter())
         for row in bundle["evidence"]:
             by_source[row["source_id"]][row["category"]] += 1
+        report = bundle["report"]
+        coverage = report["coverage"] or {"regions": []}
+        coverage_sources = {}
+        for region in coverage["regions"]:
+            for source in region["sources"]:
+                coverage_sources[source["source_id"]] = (region["region"], source)
         result = []
         for source_id, counts in sorted(by_source.items()):
             source = self.sources.describe(source_id)
+            cover_region, cover = coverage_sources.get(source_id, (source["region"], None))
             result.append({"source_id": source_id, "outlet": source["outlet"],
                            "region": source["region"], "categories": dict(sorted(counts.items())),
-                           "observations": sum(counts.values())})
-        require(sum(row["observations"] for row in result) == bundle["report"]["observations_in_window"],
+                           "observations": sum(counts.values()),
+                           "coverage_status": cover["status"] if cover else "unknown",
+                           "pending_reports": cover["pending_reports"] if cover else None,
+                           "expected_reports": sum(frame["expected_count"] for frame in cover["frames"])
+                           if cover else None})
+        require(sum(row["observations"] for row in result) == report["observations_in_window"],
                 "breakdown_mismatch", "source counts do not reconcile")
-        return {"query_hash": bundle["report"]["query_hash"],
-                "event_head": bundle["event_head"], "sources": result,
-                "total_observations": bundle["report"]["observations_in_window"]}
+        return {"query_hash": report["query_hash"], "event_head": bundle["event_head"],
+                "coverage_status": report["coverage_status"],
+                "provisional": report["provisional"],
+                "pending_reports": report["pending_reports"],
+                "sources": result, "total_observations": report["observations_in_window"]}
 
     def story_evidence(self, query, region, story_key):
         spec = report_query(query)

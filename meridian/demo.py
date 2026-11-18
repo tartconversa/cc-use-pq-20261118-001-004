@@ -46,19 +46,36 @@ def scenario():
         for external_id in ("a", "b", "c"):
             service.coding.submit(decision(external_id, "reviewer-a", "positive"))
             service.coding.submit(decision(external_id, "reviewer-b", "positive"))
+        # 来源窗口先声明承诺；未到达的一条让报告保持暂定，不能当作完整覆盖。
+        service.frames.open("north", "s1", query()["start"], query()["end"], 3)
+        service.frames.open("north-b", "s2", query()["start"], query()["end"], 1)
+        service.frames.open("south", "s3", query()["start"], query()["end"], 0)
+        service.frames.close("north-b")
+        service.frames.close("south")
+        provisional = service.releases.preview(query())
+        assert not provisional["quality"]["passed"]
+        assert provisional["report"]["provisional"]
+        service.observations.ingest(observation("d", "s1", "story-3"))
+        service.coding.submit(decision("d", "reviewer-a", "positive"))
+        service.coding.submit(decision("d", "reviewer-b", "positive"))
+        service.frames.close("north")
         preview = service.releases.preview(query())
         assert preview["quality"]["passed"]
-        assert preview["report"]["story_count"] == 2
+        assert preview["report"]["story_count"] == 3
         release = service.releases.publish("november", query(), preview["token"])
-        assert release["report"]["story_count"] == 2
+        assert release["report"]["story_count"] == 3
+        assert release["report"]["coverage"]["status"] == "complete"
         service.observations.retract("local-fixture", "c", "bad source record", expected_revision=1)
         comparison = service.releases.compare("november")
         assert comparison["story_count_delta"] == -1
-        assert service.releases.describe("november")["report"]["story_count"] == 2
+        assert comparison["coverage_changed"]
+        assert service.releases.describe("november")["report"]["story_count"] == 3
+        assert service.releases.describe("november")["report"]["coverage"]["status"] == "complete"
         audit = service.audit.run()
         assert audit["ok"]
-        result = {"batch": batch["state"], "released_stories": 2,
-                  "current_delta": comparison["story_count_delta"], "audit": audit["ok"]}
+        result = {"batch": batch["state"], "released_stories": 3,
+                  "current_delta": comparison["story_count_delta"],
+                  "frozen_coverage": "complete", "audit": audit["ok"]}
         service.close()
         return result
 

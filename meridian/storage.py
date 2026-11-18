@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS collection_frames (
   frame_id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES sources(source_id),
   start_at TEXT NOT NULL, end_at TEXT NOT NULL, expected_count INTEGER NOT NULL,
   state TEXT NOT NULL, actual_count INTEGER NOT NULL DEFAULT 0,
-  frozen_hash TEXT, created_at TEXT NOT NULL, closed_at TEXT
+  frozen_hash TEXT, batch_id TEXT, created_at TEXT NOT NULL, closed_at TEXT
 );
 CREATE INDEX IF NOT EXISTS frames_source_window ON collection_frames(source_id,start_at,end_at);
 CREATE TABLE IF NOT EXISTS frame_members (
@@ -76,6 +76,12 @@ CREATE TABLE IF NOT EXISTS frame_members (
   origin TEXT NOT NULL, external_id TEXT NOT NULL, revision INTEGER NOT NULL,
   PRIMARY KEY(frame_id,origin,external_id),
   FOREIGN KEY(origin,external_id,revision) REFERENCES observations(origin,external_id,revision)
+);
+CREATE TABLE IF NOT EXISTS frame_seals (
+  frame_id TEXT NOT NULL REFERENCES collection_frames(frame_id),
+  seal_no INTEGER NOT NULL, actual_count INTEGER NOT NULL, current_count INTEGER NOT NULL,
+  frozen_hash TEXT NOT NULL, sealed_at TEXT NOT NULL,
+  PRIMARY KEY(frame_id,seal_no)
 );
 """
 
@@ -100,6 +106,14 @@ class Store:
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA busy_timeout=15000")
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self):
+        """为早期数据库补齐新增列；CREATE TABLE IF NOT EXISTS 不会改动旧表。"""
+        columns = {row["name"] for row in self.db.execute(
+            "PRAGMA table_info(collection_frames)").fetchall()}
+        if "batch_id" not in columns:
+            self.db.execute("ALTER TABLE collection_frames ADD COLUMN batch_id TEXT")
 
     def close(self):
         self.db.close()

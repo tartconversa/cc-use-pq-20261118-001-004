@@ -5,11 +5,12 @@ from .errors import require
 
 
 class EvidenceAnalytics:
-    def __init__(self, store, observations, sources, coding):
+    def __init__(self, store, observations, sources, coding, frames=None):
         self.store = store
         self.observations = observations
         self.sources = sources
         self.coding = coding
+        self.frames = frames
 
     def _rows(self, spec):
         rows = []
@@ -42,6 +43,55 @@ class EvidenceAnalytics:
 
     def report(self, payload):
         spec = report_query(payload)
+        report = self._report(spec)
+        if self.frames is not None:
+            coverage = self.frames.coverage_report(spec)
+            report["coverage"] = coverage
+            report["provisional"] = coverage["provisional"]
+            report["coverage_status"] = coverage["status"]
+            report["pending_reports"] = coverage["pending_reports"]
+            covered = {row["region"]: row for row in coverage["regions"]}
+            for region in report["regions"]:
+                record = covered.get(region["region"])
+                region["coverage"] = self._region_coverage(record)
+                region["stance_bounds"] = self._share_bounds(region, record)
+        else:
+            report["coverage"] = None
+            report["provisional"] = False
+            report["coverage_status"] = "unknown"
+            report["pending_reports"] = 0
+            for region in report["regions"]:
+                region["coverage"] = self._region_coverage(None)
+                region["stance_bounds"] = None
+        return report
+
+    @staticmethod
+    def _region_coverage(record):
+        if record is None:
+            return {"status": "unknown", "pending_reports": None, "pending_known": False,
+                    "bounded": False, "uncovered_sources": [], "unbounded_sources": []}
+        return {"status": record["status"], "pending_reports": record["pending_reports"],
+                "pending_known": record["pending_known"], "bounded": record["bounded"],
+                "uncovered_sources": record["uncovered_sources"],
+                "unbounded_sources": record["unbounded_sources"]}
+
+    @staticmethod
+    def _share_bounds(region, record):
+        """缺口尚未到达时的占比区间；只在覆盖可量化时给出。"""
+        if record is None or record["status"] not in {"complete", "incomplete"}:
+            return None
+        pending = record["pending_reports"]
+        if pending is None or not region["story_count"]:
+            return None
+        total = region["story_count"] + pending
+        bounds = {}
+        for stance, count in region["stance_counts"].items():
+            bounds[stance] = {"lower": round(count / total, 6),
+                              "upper": round(min(count + pending, total) / total, 6)}
+        return {"denominator": region["story_count"], "pending": pending,
+                "total_if_complete": total, "stances": bounds}
+
+    def _report(self, spec):
         observed = self._rows(spec)
         exclusions = Counter()
         groups = defaultdict(list)
@@ -92,11 +142,13 @@ class EvidenceAnalytics:
                                               for key, value in sorted(data["stances"].items())},
                             "topic_counts": dict(sorted(data["topics"].items())),
                             "audience_counts": dict(sorted(data["audiences"].items()))})
-        return {"query": spec, "query_hash": digest(spec), "event_head": self.store.head(),
-                "observations_in_window": len(observed), "eligible_observations": sum(len(v) for v in groups.values()),
-                "excluded": dict(sorted(exclusions.items())), "story_count": len(story_rows),
-                "stories": story_rows, "regions": regions,
-                "provenance": sorted(provenance, key=lambda item: (item["origin"], item["external_id"]))}
+        report = {"query": spec, "query_hash": digest(spec), "event_head": self.store.head(),
+                  "observations_in_window": len(observed),
+                  "eligible_observations": sum(len(v) for v in groups.values()),
+                  "excluded": dict(sorted(exclusions.items())), "story_count": len(story_rows),
+                  "stories": story_rows, "regions": regions,
+                  "provenance": sorted(provenance, key=lambda item: (item["origin"], item["external_id"]))}
+        return report
 
     def trace_story(self, spec, region, story_key):
         report = self.report(spec)

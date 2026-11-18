@@ -41,9 +41,31 @@ class ProvenanceExplorer:
                                     "after": excluded_after.get(kind, 0)}
                              for kind in sorted(set(excluded_before) | set(excluded_after))
                              if excluded_before.get(kind, 0) != excluded_after.get(kind, 0)}
+        coverage_before = old["report"].get("coverage")
+        coverage_after = current.get("coverage")
+        coverage_changes = []
+        regions_before = {row["region"]: row for row in (coverage_before or {}).get("regions", [])}
+        regions_after = {row["region"]: row for row in (coverage_after or {}).get("regions", [])}
+        for region in sorted(set(regions_before) | set(regions_after)):
+            left = regions_before.get(region)
+            right = regions_after.get(region)
+            left_pending = left["pending_reports"] if left else None
+            right_pending = right["pending_reports"] if right else None
+            left_status = left["status"] if left else None
+            right_status = right["status"] if right else None
+            if left_status == right_status and left_pending == right_pending:
+                continue
+            coverage_changes.append({"region": region,
+                                     "before": {"status": left_status,
+                                                "pending_reports": left_pending},
+                                     "after": {"status": right_status,
+                                               "pending_reports": right_pending}})
         return {"release_id": release_id, "frozen_head": old["event_head"],
                 "current_head": current["event_head"], "changed_stories": changes,
                 "exclusion_changes": exclusion_changes,
+                "coverage_changes": coverage_changes,
+                "frozen_coverage": coverage_before,
+                "current_coverage": coverage_after,
                 "same_result": not changes and not exclusion_changes}
 
     def observation_history(self, origin, external_id):
